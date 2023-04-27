@@ -199,7 +199,10 @@ impl<const NUM_TX: usize> ConstraintSynthesizer<ConstraintF> for Rollup<NUM_TX> 
                 })?;
             // ... and authentication path after the update.
             // TODO: Fill in the following
-            // let sender_post_path = ???
+            let sender_post_path =
+                AccPathVar::new_witness(ark_relations::ns!(cs, "Sender Post-Path"), || {
+                    sender_post_path.ok_or(SynthesisError::AssignmentMissing)
+                })?;
 
             // Declare the recipient's initial account balance...
             let recipient_acc_info = AccountInformationVar::new_witness(
@@ -214,7 +217,10 @@ impl<const NUM_TX: usize> ConstraintSynthesizer<ConstraintF> for Rollup<NUM_TX> 
 
             // ... and authentication path after the update.
             // TODO: Fill in the following
-            // let recipient_post_path = ???
+            let recipient_post_path =
+                AccPathVar::new_witness(ark_relations::ns!(cs, "Recipient Post-Path"), || {
+                    recipient_post_path.ok_or(SynthesisError::AssignmentMissing)
+                })?;
 
             // Declare the state root before the transaction...
             let pre_tx_root =
@@ -230,21 +236,24 @@ impl<const NUM_TX: usize> ConstraintSynthesizer<ConstraintF> for Rollup<NUM_TX> 
             // Enforce that the state root after the previous transaction equals
             // the starting state root for this transaction
             // TODO: Write this
+            prev_root
+                .is_eq(&pre_tx_root)?
+                .enforce_equal(&Boolean::TRUE)?;
 
             // Validate that the transaction signature and amount is correct.
             // TODO: Uncomment this
-            // tx.validate(
-            //     &ledger_params,
-            //     &sender_acc_info,
-            //     &sender_pre_path,
-            //     &sender_post_path,
-            //     &recipient_acc_info,
-            //     &recipient_pre_path,
-            //     &recipient_post_path,
-            //     &pre_tx_root,
-            //     &post_tx_root,
-            // )?
-            // .enforce_equal(&Boolean::TRUE)?;
+            tx.validate(
+                &ledger_params,
+                &sender_acc_info,
+                &sender_pre_path,
+                &sender_post_path,
+                &recipient_acc_info,
+                &recipient_pre_path,
+                &recipient_post_path,
+                &pre_tx_root,
+                &post_tx_root,
+            )?
+            .enforce_equal(&Boolean::TRUE)?;
 
             // Set the root for the next transaction.
             prev_root = post_tx_root;
@@ -252,6 +261,10 @@ impl<const NUM_TX: usize> ConstraintSynthesizer<ConstraintF> for Rollup<NUM_TX> 
         // Check that the final root is consistent with the root computed after
         // applying all state transitions
         // TODO: implement this
+        final_root
+            .is_eq(&prev_root)?
+            .enforce_equal(&Boolean::TRUE)?;
+
         Ok(())
     }
 }
@@ -351,10 +364,20 @@ mod test {
         .unwrap();
         assert!(test_cs(rollup));
 
+        let account_id_to_secret_key = Transaction::create_account_id_to_secret_key_map(
+            &vec![alice_id, bob_id],
+            &vec![alice_sk.clone(), bob_sk.clone()],
+        );
+        let compressed_transactions = Transaction::compress(
+            &pp,
+            &vec![tx1.clone(), tx1.clone()],
+            &account_id_to_secret_key,
+        );
+
         let mut temp_state = state.clone();
-        let rollup = Rollup::<2>::with_state_and_transactions(
+        let rollup = Rollup::<1>::with_state_and_transactions(
             pp.clone(),
-            &[tx1.clone(), tx1.clone()],
+            compressed_transactions.as_slice(),
             &mut temp_state,
             true,
         )
@@ -411,7 +434,7 @@ mod test {
 
     // Builds a circuit with two txs, using different pubkeys & amounts every time.
     // It returns this circuit
-    fn build_two_tx_circuit() -> Rollup<2> {
+    fn build_two_tx_circuit() -> Rollup<1> {
         use ark_std::rand::Rng;
         let mut rng = ark_std::test_rng();
         let pp = Parameters::sample(&mut rng);
@@ -426,6 +449,11 @@ mod test {
         // Let's make an account for Bob.
         let (bob_id, _bob_pk, bob_sk) = state.sample_keys_and_register(&pp, &mut rng).unwrap();
 
+        let account_id_to_secret_key = Transaction::create_account_id_to_secret_key_map(
+            &vec![alice_id, bob_id],
+            &vec![alice_sk.clone(), bob_sk.clone()],
+        );
+
         let amount_to_send = rng.gen_range(0..200);
 
         // Alice wants to transfer amount_to_send units to Bob, and does this twice
@@ -438,9 +466,14 @@ mod test {
             &alice_sk,
             &mut rng,
         );
-        let rollup = Rollup::<2>::with_state_and_transactions(
+        let compressed_transactions = Transaction::compress(
+            &pp,
+            &vec![tx1.clone(), tx1.clone()],
+            &account_id_to_secret_key,
+        );
+        let rollup = Rollup::<1>::with_state_and_transactions(
             pp.clone(),
-            &[tx1.clone(), tx1.clone()],
+            compressed_transactions.as_slice(),
             &mut temp_state,
             true,
         )
